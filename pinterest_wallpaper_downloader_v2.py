@@ -120,20 +120,24 @@ def collect_image_candidates(
 
     for path in files:
         if path.suffix.lower() not in ALLOWED_EXTENSIONS:
+            print(f"Skipping '{path.name}': Not an allowed image type.")
             skipped_non_image += 1
             continue
         try:
             with Image.open(path) as img:
                 width, height = img.size
-        except Exception:
+        except Exception as e:
+            print(f"Skipping '{path.name}': Could not open or read image ({e}).")
             skipped_non_image += 1
             continue
 
         if width < MIN_WIDTH or height < MIN_HEIGHT:
+            print(f"Skipping '{path.name}': Resolution {width}x{height} is below minimum {MIN_WIDTH}x{MIN_HEIGHT}.")
             skipped_small += 1
             continue
 
         if not is_allowed_aspect_ratio(width, height):
+            print(f"Skipping '{path.name}': Aspect ratio {width/height:.2f} is outside 16:9 tolerance ({TARGET_ASPECT_RATIO * (1 - ASPECT_RATIO_TOLERANCE):.2f}-{TARGET_ASPECT_RATIO * (1 + ASPECT_RATIO_TOLERANCE):.2f}).")
             skipped_aspect += 1
             continue
 
@@ -209,6 +213,7 @@ def keep_high_res_images(selected: list[tuple[Path, int, int]], output_dir: Path
     for path, width, height in selected:
         digest = file_sha1(path)
         if digest in seen_hashes:
+            print(f"Skipping duplicate '{path.name}'.")
             continue
         seen_hashes.add(digest)
 
@@ -220,6 +225,7 @@ def keep_high_res_images(selected: list[tuple[Path, int, int]], output_dir: Path
             destination = output_dir / f"{base_filename}_{collision:02d}{ext}"
             collision += 1
         shutil.copy2(path, destination)
+        print(f"Downloaded '{path.name}' to '{destination.name}'.")
         downloaded += 1
 
     return downloaded
