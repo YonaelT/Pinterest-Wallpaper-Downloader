@@ -105,45 +105,51 @@ def is_allowed_aspect_ratio(width: int, height: int) -> bool:
 
 def collect_image_candidates(
     temp_dir: Path,
-) -> tuple[list[tuple[Path, int, int]], int, int, int]:
+) -> tuple[list[tuple[Path, int, int]], list[tuple[Path, int, int, str]], int]:
     """
-    Return downloadable image candidates and skip counts:
-    (candidates, skipped_non_image, skipped_small, skipped_aspect)
+    Scan all files and sort them into:
+      - candidates: passed all filters
+      - skipped_list: valid image format but failed resolution or aspect ratio,
+                      each entry includes a reason string
+      - skipped_non_image: count of files with unsupported formats (always excluded)
+
+    Returns: (candidates, skipped_list, skipped_non_image)
     """
     skipped_non_image = 0
-    skipped_small = 0
-    skipped_aspect = 0
     candidates: list[tuple[Path, int, int]] = []
+    skipped_list: list[tuple[Path, int, int, str]] = []
 
     files = [p for p in temp_dir.rglob("*") if p.is_file()]
     files.sort()
 
     for path in files:
         if path.suffix.lower() not in ALLOWED_EXTENSIONS:
-            print(f"Skipping '{path.name}': Not an allowed image type.")
             skipped_non_image += 1
             continue
+
         try:
             with Image.open(path) as img:
                 width, height = img.size
-        except Exception as e:
-            print(f"Skipping '{path.name}': Could not open or read image ({e}).")
+        except Exception:
             skipped_non_image += 1
             continue
 
-        if width < MIN_WIDTH or height < MIN_HEIGHT:
-            print(f"Skipping '{path.name}': Resolution {width}x{height} is below minimum {MIN_WIDTH}x{MIN_HEIGHT}.")
-            skipped_small += 1
-            continue
+        too_small = width < MIN_WIDTH or height < MIN_HEIGHT
+        bad_ratio = not is_allowed_aspect_ratio(width, height)
 
-        if not is_allowed_aspect_ratio(width, height):
-            print(f"Skipping '{path.name}': Aspect ratio {width/height:.2f} is outside 16:9 tolerance ({TARGET_ASPECT_RATIO * (1 - ASPECT_RATIO_TOLERANCE):.2f}-{TARGET_ASPECT_RATIO * (1 + ASPECT_RATIO_TOLERANCE):.2f}).")
-            skipped_aspect += 1
-            continue
+        if too_small and bad_ratio:
+            reason = f"too small ({width}x{height}) + aspect ratio {width/height:.2f}"
+            skipped_list.append((path, width, height, reason))
+        elif too_small:
+            reason = f"too small ({width}x{height}, min {MIN_WIDTH}x{MIN_HEIGHT})"
+            skipped_list.append((path, width, height, reason))
+        elif bad_ratio:
+            reason = f"aspect ratio {width/height:.2f} (outside 16:9 tolerance)"
+            skipped_list.append((path, width, height, reason))
+        else:
+            candidates.append((path, width, height))
 
-        candidates.append((path, width, height))
-
-    return candidates, skipped_non_image, skipped_small, skipped_aspect
+    return candidates, skipped_list, skipped_non_image
 
 
 def parse_selection(choice: str, total: int) -> list[int] | None:
@@ -175,34 +181,77 @@ def parse_selection(choice: str, total: int) -> list[int] | None:
     except ValueError:
         return None
 
-    # Preserve order and remove duplicates.
     return list(dict.fromkeys(indices))
 
 
-def choose_candidates(candidates: list[tuple[Path, int, int]]) -> list[tuple[Path, int, int]] | None:
-    """Show candidate list and ask user what to download."""
+def choose_candidates(
+    candidates: list[tuple[Path, int, int]],
+    label: str = "image candidate",
+    note: str | None = None,
+) -> list[tuple[Path, int, int]] | None:
+    """Show a candidate list and ask the user what to download.
+    Returns None if user quits entirely, empty list if they skip."""
     if not candidates:
         return []
 
-    print(f"\nFound {len(candidates)} image candidate(s):")
+    print(f"\nFound {len(candidates)} {label}(s):")
+    if note:
+        print(f"  Note: {note}")
     print("-" * 60)
     for i, (path, w, h) in enumerate(candidates, 1):
-        print(f"  {i}. {w}x{h} - {path.name}")
+        print(f"  {i}. {w}x{h}  (ratio {w/h:.2f}) - {path.name}")
     print("-" * 60)
     print("\nOptions:")
     print("  d      - Download all")
     print("  1,3,5  - Download specific numbers")
     print("  1-5    - Download a range")
-    print("  q      - Quit")
+    print("  s      - Skip / download none")
+    print("  q      - Quit entirely")
 
-    selection = input("\nSelect: ")
-    parsed = parse_selection(selection, len(candidates))
-    if parsed is None:
-        print("Invalid selection. Exiting.")
-        return None
-    if not parsed:
+    while True:
+        selection = input("\nSelect: ").strip().lower()
+        if selection == "q":
+            return None
+        if selection in ("s", ""):
+            return []
+        parsed = parse_selection(selection, len(candidates))
+        if parsed is None:
+            print("Invalid selection. Try again.")
+            continue
+        return [candidates[i] for i in parsed]
+
+
+def choose_skipped(
+    skipped_list: list[tuple[Path, int, int, str]],
+) -> list[tuple[Path, int, int]] | None:
+    """Show all skipped images with their skip reason and let the user pick any.
+    Returns None if user quits entirely, empty list if they skip."""
+    if not skipped_list:
         return []
-    return [candidates[i] for i in parsed]
+
+    print(f"\n{len(skipped_list)} image(s) were skipped during filtering:")
+    print("-" * 60)
+    for i, (path, w, h, reason) in enumerate(skipped_list, 1):
+        print(f"  {i}. {w}x{h} - {path.name} Reason: {reason}")
+    print("-" * 60)
+    print("\nOptions:")
+    print("  d      - Download all")
+    print("  1,3,5  - Download specific numbers")
+    print("  1-5    - Download a range")
+    print("  s      - Skip / download none")
+    print("  q      - Quit entirely")
+
+    while True:
+        selection = input("\nSelect: ").strip().lower()
+        if selection == "q":
+            return None
+        if selection in ("s", ""):
+            return []
+        parsed = parse_selection(selection, len(skipped_list))
+        if parsed is None:
+            print("Invalid selection. Try again.")
+            continue
+        return [(skipped_list[i][0], skipped_list[i][1], skipped_list[i][2]) for i in parsed]
 
 
 def keep_high_res_images(selected: list[tuple[Path, int, int]], output_dir: Path) -> int:
@@ -213,7 +262,6 @@ def keep_high_res_images(selected: list[tuple[Path, int, int]], output_dir: Path
     for path, width, height in selected:
         digest = file_sha1(path)
         if digest in seen_hashes:
-            print(f"Skipping duplicate '{path.name}'.")
             continue
         seen_hashes.add(digest)
 
@@ -225,7 +273,6 @@ def keep_high_res_images(selected: list[tuple[Path, int, int]], output_dir: Path
             destination = output_dir / f"{base_filename}_{collision:02d}{ext}"
             collision += 1
         shutil.copy2(path, destination)
-        print(f"Downloaded '{path.name}' to '{destination.name}'.")
         downloaded += 1
 
     return downloaded
@@ -251,29 +298,42 @@ def main() -> None:
             print("  pip install gallery-dl Pillow")
             return
 
-        candidates, skipped_non_image, skipped_small, skipped_aspect = collect_image_candidates(temp_dir)
-        if not candidates:
+        candidates, skipped_list, skipped_non_image = collect_image_candidates(temp_dir)
+
+        if not candidates and not skipped_list:
             print("No downloadable image candidates found on this board.")
-            print(f"Skipped (non-image/unsupported): {skipped_non_image}")
-            print(f"Skipped (too small): {skipped_small}")
-            print(f"Skipped (not near 16:9): {skipped_aspect}")
+            print(f"Skipped (unsupported format): {skipped_non_image}")
             return
 
-        selected = choose_candidates(candidates)
-        if selected is None:
-            return
+        selected: list[tuple[Path, int, int]] = []
+
+        # --- Step 1: main candidates ---
+        if candidates:
+            result = choose_candidates(candidates, label="image candidate")
+            if result is None:
+                return
+            selected.extend(result)
+        else:
+            print("\nNo images passed the filters.")
+
+        # --- Step 2: show ALL skipped images ---
+        if skipped_list:
+            result2 = choose_skipped(skipped_list)
+            if result2 is None:
+                return
+            selected.extend(result2)
+
         if not selected:
-            print("No images selected. Exiting.")
+            print("\nNo images selected. Exiting.")
             return
 
         downloaded = keep_high_res_images(selected, output_dir)
 
-    print("Done!")
-    print(f"  Eligible images listed: {len(candidates)}")
-    print(f"  Downloaded wallpapers: {downloaded}")
-    print(f"  Skipped (too small): {skipped_small}")
-    print(f"  Skipped (not near 16:9): {skipped_aspect}")
-    print(f"  Skipped (non-image/unsupported): {skipped_non_image}")
+    print("\nDone!")
+    print(f"  Passed filters        : {len(candidates)}")
+    print(f"  Skipped (shown to you): {len(skipped_list)}")
+    print(f"  Skipped (bad format)  : {skipped_non_image}")
+    print(f"  Downloaded            : {downloaded}")
     print(f"\nSaved to: {output_dir}")
 
 
