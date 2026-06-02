@@ -10,6 +10,7 @@ Dependencies:
 """
 
 import hashlib
+import json
 import shutil
 import subprocess
 import tempfile
@@ -23,6 +24,10 @@ MIN_HEIGHT = 720
 TARGET_ASPECT_RATIO = 16 / 9
 ASPECT_RATIO_TOLERANCE = 0.15
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+
+OUTPUT_DIR = Path.home() / "Desktop" / "wallpapers"
+ARCHIVE_FILE = OUTPUT_DIR / "gallery_dl_archive.sqlite"
+LOG_FILE = OUTPUT_DIR / "downloaded.txt"
 
 
 def prompt_board_url() -> str:
@@ -60,13 +65,20 @@ def run_gallery_dl(board_url: str, temp_dir: Path) -> tuple[bool, str]:
     if not cmd_prefix:
         return False, "Could not find gallery-dl or python executable."
 
+    archive_exists = ARCHIVE_FILE.exists()
     cmd = [
         *cmd_prefix,
-        "-d",
-        str(temp_dir),
+        "-d", str(temp_dir),
         "--no-mtime",
+        "--write-metadata",
+        "--download-archive", str(ARCHIVE_FILE),
         board_url,
     ]
+
+    if not archive_exists:
+        print("(First run — building download archive. All pins will be downloaded.)")
+    else:
+        print("(Archive found — pins already seen will be skipped.)")
 
     try:
         result = subprocess.run(
@@ -94,6 +106,40 @@ def file_sha1(path: Path) -> str:
                 break
             h.update(chunk)
     return h.hexdigest()
+
+
+def read_pin_metadata(image_path: Path) -> tuple[str, str]:
+    """
+    Read the gallery-dl JSON sidecar for an image and return
+    (pin_page_url, direct_image_url).
+
+    gallery-dl writes a .json file next to each downloaded image.
+    The Pinterest pin page URL is reconstructed from the pin ID.
+    Falls back to empty strings if the sidecar is missing or malformed.
+    """
+    sidecar = image_path.with_suffix(".json")
+    if not sidecar.exists():
+        return "", ""
+    try:
+        data = json.loads(sidecar.read_text(encoding="utf-8"))
+        pin_id = str(data.get("id", ""))
+        pin_url = f"https://www.pinterest.com/pin/{pin_id}/" if pin_id else ""
+        image_url = data.get("url", "")
+        return pin_url, image_url
+    except Exception:
+        return "", ""
+
+
+def append_to_log(log_path: Path, saved_filename: str, pin_url: str, image_url: str) -> None:
+    """Append a single downloaded image entry to the log file."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(f"[{timestamp}]\n")
+        f.write(f"  file     : {saved_filename}\n")
+        f.write(f"  pin page : {pin_url or 'unknown'}\n")
+        f.write(f"  image url: {image_url or 'unknown'}\n")
+        f.write("\n")
+
 
 
 def is_allowed_aspect_ratio(width: int, height: int) -> bool:
@@ -232,7 +278,8 @@ def choose_skipped(
     print(f"\n{len(skipped_list)} image(s) were skipped during filtering:")
     print("-" * 60)
     for i, (path, w, h, reason) in enumerate(skipped_list, 1):
-        print(f"  {i}. {w}x{h} - {path.name} Reason: {reason}")
+        print(f"  {i}. {w}x{h} - {path.name}")
+        print(f"       Reason: {reason}")
     print("-" * 60)
     print("\nOptions:")
     print("  d      - Download all")
@@ -254,7 +301,11 @@ def choose_skipped(
         return [(skipped_list[i][0], skipped_list[i][1], skipped_list[i][2]) for i in parsed]
 
 
-def keep_high_res_images(selected: list[tuple[Path, int, int]], output_dir: Path) -> int:
+def keep_high_res_images(
+    selected: list[tuple[Path, int, int]],
+    output_dir: Path,
+    log_path: Path,
+) -> int:
     downloaded = 0
     seen_hashes: set[str] = set()
     batch_stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -273,6 +324,10 @@ def keep_high_res_images(selected: list[tuple[Path, int, int]], output_dir: Path
             destination = output_dir / f"{base_filename}_{collision:02d}{ext}"
             collision += 1
         shutil.copy2(path, destination)
+
+        pin_url, image_url = read_pin_metadata(path)
+        append_to_log(log_path, destination.name, pin_url, image_url)
+
         downloaded += 1
 
     return downloaded
@@ -280,11 +335,12 @@ def keep_high_res_images(selected: list[tuple[Path, int, int]], output_dir: Path
 
 def main() -> None:
     board_url = prompt_board_url()
-    output_dir = Path.home() / "Desktop" / "wallpapers"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    print(f"\nDestination: {output_dir}")
-    print(f"Minimum resolution: {MIN_WIDTH}x{MIN_HEIGHT}")
+    print(f"\nDestination : {OUTPUT_DIR}")
+    print(f"Archive     : {ARCHIVE_FILE.name}  (gallery-dl skip-list)")
+    print(f"Log file    : {LOG_FILE.name}")
+    print(f"Min resolution: {MIN_WIDTH}x{MIN_HEIGHT}")
     print("Extracting board media with gallery-dl...\n")
 
     with tempfile.TemporaryDirectory(prefix="pinterest_v2_") as tmp:
@@ -301,7 +357,8 @@ def main() -> None:
         candidates, skipped_list, skipped_non_image = collect_image_candidates(temp_dir)
 
         if not candidates and not skipped_list:
-            print("No downloadable image candidates found on this board.")
+            print("No new images found on this board.")
+            print("(Already-downloaded pins are skipped automatically via the archive.)")
             print(f"Skipped (unsupported format): {skipped_non_image}")
             return
 
@@ -327,14 +384,15 @@ def main() -> None:
             print("\nNo images selected. Exiting.")
             return
 
-        downloaded = keep_high_res_images(selected, output_dir)
+        downloaded = keep_high_res_images(selected, OUTPUT_DIR, LOG_FILE)
 
     print("\nDone!")
     print(f"  Passed filters        : {len(candidates)}")
     print(f"  Skipped (shown to you): {len(skipped_list)}")
     print(f"  Skipped (bad format)  : {skipped_non_image}")
     print(f"  Downloaded            : {downloaded}")
-    print(f"\nSaved to: {output_dir}")
+    print(f"\nSaved to  : {OUTPUT_DIR}")
+    print(f"Log file  : {LOG_FILE}")
 
 
 if __name__ == "__main__":
