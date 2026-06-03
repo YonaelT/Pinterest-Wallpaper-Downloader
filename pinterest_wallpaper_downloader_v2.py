@@ -117,14 +117,19 @@ def read_pin_metadata(image_path: Path) -> tuple[str, str]:
     The Pinterest pin page URL is reconstructed from the pin ID.
     Falls back to empty strings if the sidecar is missing or malformed.
     """
-    sidecar = image_path.with_suffix(".json")
+    sidecar = image_path.with_suffix(image_path.suffix + ".json")
     if not sidecar.exists():
         return "", ""
     try:
         data = json.loads(sidecar.read_text(encoding="utf-8"))
-        pin_id = str(data.get("id", ""))
-        pin_url = f"https://www.pinterest.com/pin/{pin_id}/" if pin_id else ""
-        image_url = data.get("url", "")
+
+        # seo_url is "/pin/123456789/" — prefix to make a full URL
+        seo_url = data.get("seo_url", "")
+        pin_url = f"https://www.pinterest.com{seo_url}" if seo_url else ""
+
+        # highest resolution image lives under images -> orig -> url
+        image_url = data.get("images", {}).get("orig", {}).get("url", "")
+
         return pin_url, image_url
     except Exception:
         return "", ""
@@ -195,6 +200,7 @@ def collect_image_candidates(
         else:
             candidates.append((path, width, height))
 
+    skipped_list.sort(key=lambda x: x[1])
     return candidates, skipped_list, skipped_non_image
 
 
