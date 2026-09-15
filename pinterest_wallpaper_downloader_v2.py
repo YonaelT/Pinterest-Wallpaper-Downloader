@@ -10,7 +10,6 @@ Dependencies:
 """
 
 import hashlib
-import json
 import shutil
 import subprocess
 import tempfile
@@ -19,13 +18,13 @@ from pathlib import Path
 
 from PIL import Image
 
-MIN_WIDTH = 1280
-MIN_HEIGHT = 720
+MIN_WIDTH = 1920
+MIN_HEIGHT = 1080
 TARGET_ASPECT_RATIO = 16 / 9
 ASPECT_RATIO_TOLERANCE = 0.15
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
-OUTPUT_DIR = Path.home() / "Desktop" / "wallpapers"
+OUTPUT_DIR = Path.home() / "Documents" / "wallpapers"
 ARCHIVE_FILE = OUTPUT_DIR / "gallery_dl_archive.sqlite"
 LOG_FILE = OUTPUT_DIR / "downloaded.txt"
 
