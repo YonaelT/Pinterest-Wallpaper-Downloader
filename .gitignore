@@ -12,3 +12,4 @@ venv/
 # Operating System
 .DS_Store
 .env
+.venv/
