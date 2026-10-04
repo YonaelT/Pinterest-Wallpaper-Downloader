@@ -92,3 +92,8 @@ Everything goes to `~/Documents/wallpapers`:
 - The downloaded images
 - `downloaded.txt`, a log with the Pinterest pin URL for each image
 - `gallery_dl_archive.sqlite`, gallery-dl's skip-list of pins it has already seen
+
+
+## License
+
+MIT. See [LICENSE](LICENSE).
